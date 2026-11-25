@@ -17,7 +17,6 @@ jobs:
             "C:\Android",
             "C:\Program Files\Android",
             "C:\Program Files (x86)\Android",
-            "C:\ProgramData\chocolatey\lib",
             "C:\Julia",
             "C:\Strawberry",
             "C:\Rust",
@@ -38,7 +37,6 @@ jobs:
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                            -Name "fDenyTSConnections" -Value 0 -Force
-          # NLA enabled (safer, since the port is now exposed via a public tunnel)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                            -Name "UserAuthentication" -Value 1 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -83,9 +81,19 @@ jobs:
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          choco install ngrok -y --no-progress
-          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-Process -FilePath "ngrok" -ArgumentList "tcp 3389" -WindowStyle Hidden
+          if ([string]::IsNullOrWhiteSpace($env:NGROK_AUTH_TOKEN)) {
+              Write-Error "NGROK_AUTH_TOKEN secret is empty or missing."
+              exit 1
+          }
+
+          $zip = "$env:TEMP\ngrok.zip"
+          $dir = "$env:TEMP\ngrok"
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $ngrok = "$dir\ngrok.exe"
+
+          & $ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
+          Start-Process -FilePath $ngrok -ArgumentList "tcp 3389" -WindowStyle Hidden
 
           $publicUrl = $null
           $retries = 0
@@ -98,7 +106,7 @@ jobs:
               $retries++
           }
           if (-not $publicUrl) {
-              Write-Error "ngrok tunnel was not established."
+              Write-Error "ngrok tunnel was not established. Check the token and that your ngrok account allows TCP tunnels."
               exit 1
           }
           echo "RDP_ADDRESS=$publicUrl" >> $env:GITHUB_ENV
