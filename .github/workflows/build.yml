@@ -1,33 +1,34 @@
-name: Automated Windows Server Build
+name: Live Windows Server with AnyDesk & RDP
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch: # تشغيل يدوي بنقرة زر من موقع GitHub
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-    - name: Run Complete Windows Installation Script
+    - name: Configure and Start Windows Server with Live Access
       shell: powershell
+      env:
+        NGROK_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
       run: |
         $ErrorActionPreference = "Stop"
 
         # 1) Setup Workspace and Paths
-        Write-Host "=== 1/5 Preparing Workspace Directories ===" -ForegroundColor Cyan
+        Write-Host "=== 1/5 Preparing Workspace ===" -ForegroundColor Cyan
         $IsoPath = "C:\ISO\Windows_Server.iso"
         $VMRoot = "D:\VMs"
         $VMName = "WinServer"
         New-Item -ItemType Directory -Path "C:\ISO" -Force | Out-Null
         New-Item -ItemType Directory -Path $VMRoot -Force | Out-Null
 
-        # 2) Download Windows Server ISO from Official Microsoft Link
+        # 2) Download Windows Server ISO
         Write-Host "=== 2/5 Downloading Windows Server ISO ===" -ForegroundColor Cyan
         $isoUrl = "https://microsoft.com"
         Invoke-WebRequest -Uri $isoUrl -OutFile $IsoPath
-        Write-Host "ISO Download completed successfully." -ForegroundColor Green
 
-        # 3) Generate Autounattend.xml for Automated Unattended Setup
-        Write-Host "=== 3/5 Generating Answer File (Autounattend.xml) ===" -ForegroundColor Cyan
+        # 3) Generate Autounattend.xml with RDP & AnyDesk Auto-Install
+        Write-Host "=== 3/5 Generating Auto-Install Script ===" -ForegroundColor Cyan
         $unattendXml = @"
         <?xml version="1.0" encoding="utf-8"?>
         <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -43,20 +44,11 @@ jobs:
                     <DiskConfiguration>
                         <Disk wcm:action="add">
                             <CreatePartitions>
-                                <CreatePartition wcm:action="add">
-                                    <Order>1</Order>
-                                    <Type>Primary</Type>
-                                    <Extend>true</Extend>
-                                </CreatePartition>
+                                <CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
                             </CreatePartitions>
                             <ModifyPartitions>
                                 <ModifyPartition wcm:action="add">
-                                    <Active>true</Active>
-                                    <Format>NTFS</Format>
-                                    <Label>System</Label>
-                                    <Letter>C</Letter>
-                                    <Order>1</Order>
-                                    <PartitionID>1</PartitionID>
+                                    <Active>true</Active><Format>NTFS</Format><Label>System</Label><Letter>C</Letter><Order>1</Order><PartitionID>1</PartitionID>
                                 </ModifyPartition>
                             </ModifyPartitions>
                             <DiskID>0</DiskID>
@@ -69,18 +61,13 @@ jobs:
                             <InstallTo><DiskID>0</DiskID><PartitionID>1</PartitionID></InstallTo>
                         </OSImage>
                     </ImageInstall>
-                    <UserData>
-                        <AcceptEula>true</AcceptEula>
-                    </UserData>
+                    <UserData><AcceptEula>true</AcceptEula></UserData>
                 </component>
             </settings>
             <settings pass="oobeSystem">
                 <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
                     <UserAccounts>
-                        <AdministratorPassword>
-                            <Value>Administrator</Value>
-                            <PlainText>true</PlainText>
-                        </AdministratorPassword>
+                        <AdministratorPassword><Value>Administrator</Value><PlainText>true</PlainText></AdministratorPassword>
                     </UserAccounts>
                     <AutoLogon>
                         <Password><Value>Administrator</Value><PlainText>true</PlainText></Password>
@@ -93,6 +80,11 @@ jobs:
                             <Description>Enable RDP</Description>
                             <Order>1</Order>
                         </SynchronousCommand>
+                        <SynchronousCommand wcm:action="add">
+                            <CommandLine>powershell -Command "Invoke-WebRequest -Uri 'https://anydesk.com' -OutFile 'C:\AnyDesk.exe'; Start-Process 'C:\AnyDesk.exe' -ArgumentList '--install C:\AnyDesk --start-with-win --silent'; Start-Sleep -Seconds 10; & 'C:\AnyDesk\AnyDesk.exe' --set-password Administrator"</CommandLine>
+                            <Description>Install AnyDesk with Password</Description>
+                            <Order>2</Order>
+                        </SynchronousCommand>
                     </FirstLogonCommands>
                 </component>
             </settings>
@@ -101,64 +93,39 @@ jobs:
         $unattendPath = "C:\ISO\Autounattend.xml"
         Set-Content -Path $unattendPath -Value $unattendXml
 
-        # 4) Create and Configure Hyper-V Virtual Machine (160GB Disk)
-        Write-Host "=== 4/5 Building Virtual Machine ===" -ForegroundColor Cyan
+        # 4) Create and Start VM (200GB)
+        Write-Host "=== 4/5 Building 200GB Virtual Machine ===" -ForegroundColor Cyan
         $vmDir = Join-Path $VMRoot $VMName
         New-Item -ItemType Directory -Path $vmDir -Force | Out-Null
         $vhdPath = Join-Path $vmDir "$VMName.vhd"
+        New-VHD -Path $vhdPath -SizeBytes (200 * 1GB) -Dynamic | Out-Null
         
-        # Create Dynamic VHD (160 GB)
-        New-VHD -Path $vhdPath -SizeBytes (160 * 1GB) -Dynamic | Out-Null
-        
-        # Deploy VM on GitHub's Runner Default Network Switch
         New-VM -Name $VMName -Generation 1 -MemoryStartupBytes (6 * 1GB) -VHDPath $vhdPath -Path $VMRoot -SwitchName "Default Switch" | Out-Null
         Set-VM -Name $VMName -ProcessorCount 4 -CheckpointType Disabled
         Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $false
-        
-        # Attach ISO and Start VM Boot
         Set-VMDvdDrive -VMName $VMName -Path $IsoPath
         Start-VM -Name $VMName
         
-        Write-Host "Unattended OS installation started inside the VM..." -ForegroundColor Yellow
+        Write-Host "Windows is installing inside GitHub. Booting network tunnels..." -ForegroundColor Yellow
+
+        # 5) Setup Ngrok to forward RDP and AnyDesk to your Windows App
+        Write-Host "=== 5/5 Connecting Live Network Bridge ===" -ForegroundColor Cyan
+        Invoke-WebRequest -Uri "https://equinox.io" -OutFile "C:\ngrok.zip"
+        Expand-Archive -Path "C:\ngrok.zip" -DestinationPath "C:\ngrok" -Force
         
-        # IP Fetching Loop
-        Write-Host "Scanning network adapters to retrieve internal VM IP address..." -ForegroundColor Cyan
-        $ipFound = $false
-        for ($i = 0; $i -lt 30; $i++) {
-            Start-Sleep -Seconds 30
-            $vmNet = Get-VMNetworkAdapter -VMName $VMName
-            $ips = $vmNet.IPAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
-            if ($ips) {
-                Write-Host "--------------------------------------------------------" -ForegroundColor Green
-                Write-Host "SUCCESS: VM successfully captured on the network!" -ForegroundColor Green
-                Write-Host "VM INTERNAL IP ADDRESS IS: $($ips -join ', ')" -ForegroundColor Green
-                Write-Host "--------------------------------------------------------" -ForegroundColor Green
-                $ipFound = $true
-                break
-            }
-            $currentAttempt = $i + 1
-            Write-Host "Waiting for VM network synchronization... (Attempt $currentAttempt / 30)" -ForegroundColor Yellow
-        }
-
-        if (-not $ipFound) {
-            Write-Host "WARNING: Could not fetch IP yet, continuing setup in background..." -ForegroundColor Yellow
-        }
-
-        # Final installation phase buffer
-        Write-Host "Finalizing Windows installation buffer..." -ForegroundColor Cyan
-        Start-Sleep -Seconds 450
+        # Start the Tunneling Service
+        & C:\ngrok\ngrok.exe config add-authtoken $env:NGROK_TOKEN | Out-Null
+        Start-Process "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
         
-        # Safely power down VM to extract the clean VHD drive
-        Stop-VM -Name $VMName -Force -TurnOff
+        Write-Host "--------------------------------------------------------" -ForegroundColor Green
+        Write-Host "📌 HOW TO CONNECT TO YOUR SERVER:" -ForegroundColor Green
+        Write-Host "1. Wait 2 minutes for Ngrok to boot."
+        Write-Host "2. Go to your Ngrok Dashboard online -> Cloud Edge -> Endpoints."
+        Write-Host "3. Copy the URL generated there (Example: 0.tcp.ngrok.io:12345)."
+        Write-Host "4. Open Windows App (Remote Desktop) on your computer."
+        Write-Host "5. Paste that URL, use Username: Administrator / Password: Administrator"
+        Write-Host "6. Once inside, you can open AnyDesk directly from C:\AnyDesk!"
+        Write-Host "--------------------------------------------------------" -ForegroundColor Green
 
-        # 5) Export Final Artifact VHD Disk File
-        Write-Host "=== 5/5 Preparing VHD Drive for Artifact Upload ===" -ForegroundColor Cyan
-        Move-Item -Path $vhdPath -Destination ".\WinServer_Ready.vhd"
-        Write-Host "VM Build completed successfully!" -ForegroundColor Green
-
-    - name: Upload Finished Windows VHD Disk
-      uses: actions/upload-artifact@v4
-      with:
-        name: Windows-Server-160GB-Disk
-        path: .\WinServer_Ready.vhd
-        retention-days: 5
+        # Keep GitHub action running for 4 hours so you can use the server live
+        Start-Sleep -Seconds 14400
