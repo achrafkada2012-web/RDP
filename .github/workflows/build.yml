@@ -1,4 +1,4 @@
-herename: Automated Windows Server Build
+name: Automated Windows Server Build
 
 on:
   workflow_dispatch: # تشغيل يدوي بنقرة زر من موقع GitHub
