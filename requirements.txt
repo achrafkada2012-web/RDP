@@ -1,0 +1,6 @@
+discord.py>=2.4
+aiohttp>=3.9
+python-dotenv>=1.0
+azure-identity>=1.17
+azure-mgmt-compute>=33.0
+azure-mgmt-network>=26.0
