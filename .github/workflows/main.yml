@@ -8,7 +8,7 @@ permissions:
 jobs:
   pc-virtual:
     runs-on: windows-latest
-    timeout-minutes: 36000
+    timeout-minutes: 3600
     steps:
       - name: Mostrar espaço em disco
         shell: pwsh
@@ -54,5 +54,5 @@ jobs:
       - name: Manter ativo
         shell: pwsh
         run: |
-          $end = (Get-Date).AddMinutes(350)
+          $end = (Get-Date).AddMinutes(330)
           while ((Get-Date) -lt $end) { Start-Sleep -Seconds 60 }
