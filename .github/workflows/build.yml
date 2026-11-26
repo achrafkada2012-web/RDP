@@ -1,7 +1,7 @@
 name: Automated Windows Server Build
 
 on:
-  workflow_dispatch: # تشغيل يدوي بنقرة زر من موقع GitHub
+  workflow_dispatch: # Manual trigger
 
 jobs:
   build-windows:
@@ -12,22 +12,22 @@ jobs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        # 1) إنشاء المجلدات وتجهيز المسارات
-        Write-Host "=== 1/5 تجهيز مجلدات العمل ===" -ForegroundColor Cyan
+        # 1) Setup Workspace and Paths
+        Write-Host "=== 1/5 Preparing Workspace Directories ===" -ForegroundColor Cyan
         $IsoPath = "C:\ISO\Windows_Server.iso"
         $VMRoot = "D:\VMs"
         $VMName = "WinServer"
         New-Item -ItemType Directory -Path "C:\ISO" -Force | Out-Null
         New-Item -ItemType Directory -Path $VMRoot -Force | Out-Null
 
-        # 2) تحميل نسخة الويندوز سيرفر (رابط مباشر رسمي من مايكروسوفت)
-        Write-Host "=== 2/5 تحميل ملف Windows Server ISO ===" -ForegroundColor Cyan
+        # 2) Download Windows Server ISO from Official Microsoft Link
+        Write-Host "=== 2/5 Downloading Windows Server ISO ===" -ForegroundColor Cyan
         $isoUrl = "https://microsoft.com"
         Invoke-WebRequest -Uri $isoUrl -OutFile $IsoPath
-        Write-Host "تم تحميل ملف ISO بنجاح." -ForegroundColor Green
+        Write-Host "ISO Download completed successfully." -ForegroundColor Green
 
-        # 3) توليد ملف التثبيت الصامت برمجياً لتخطي الإعداد اليدوي وتعيين الباسورد وتفعيل الـ RDP
-        Write-Host "=== 3/5 إنشاء ملف الإجابات للتثبيت التلقائي ===" -ForegroundColor Cyan
+        # 3) Generate Autounattend.xml for Automated Unattended Setup
+        Write-Host "=== 3/5 Generating Answer File (Autounattend.xml) ===" -ForegroundColor Cyan
         $unattendXml = @"
         <?xml version="1.0" encoding="utf-8"?>
         <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -101,28 +101,28 @@ jobs:
         $unattendPath = "C:\ISO\Autounattend.xml"
         Set-Content -Path $unattendPath -Value $unattendXml
 
-        # 4) إنشاء وإعداد الجهاز الافتراضي
-        Write-Host "=== 4/5 بناء الجهاز الافتراضي بمساحة 160GB ===" -ForegroundColor Cyan
+        # 4) Create and Configure Hyper-V Virtual Machine (160GB Disk)
+        Write-Host "=== 4/5 Building Virtual Machine ===" -ForegroundColor Cyan
         $vmDir = Join-Path $VMRoot $VMName
         New-Item -ItemType Directory -Path $vmDir -Force | Out-Null
         $vhdPath = Join-Path $vmDir "$VMName.vhd"
         
-        # إنشاء قرص ديناميكي بحجم 160 جيجابايت
+        # Create Dynamic VHD (160 GB)
         New-VHD -Path $vhdPath -SizeBytes (160 * 1GB) -Dynamic | Out-Null
         
-        # ربط الـ Switch الافتراضي المتاح بسيرفر GitHub
+        # Deploy VM on GitHub's Runner Default Network Switch
         New-VM -Name $VMName -Generation 1 -MemoryStartupBytes (6 * 1GB) -VHDPath $vhdPath -Path $VMRoot -SwitchName "Default Switch" | Out-Null
         Set-VM -Name $VMName -ProcessorCount 4 -CheckpointType Disabled
         Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $false
         
-        # ربط الـ ISO والملف التلقائي وتشغيل السيرفر
+        # Attach ISO and Start VM Boot
         Set-VMDvdDrive -VMName $VMName -Path $IsoPath
         Start-VM -Name $VMName
         
-        Write-Host "بدء التثبيت التلقائي للويندوز داخل السيرفر المفتوح..." -ForegroundColor Yellow
+        Write-Host "Unattended OS installation started inside the VM..." -ForegroundColor Yellow
         
-        # مرحلة رصد الـ IP: الانتظار حتى يقوم نظام الويندوز بالإقلاع وسحب IP
-        Write-Host "جاري فحص حالة الشبكة لاستخراج عنوان الـ IP للسيرفر الجديد..." -ForegroundColor Cyan
+        # IP Fetching Loop
+        Write-Host "Scanning network adapters to retrieve internal VM IP address..." -ForegroundColor Cyan
         $ipFound = $false
         for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 30
@@ -130,30 +130,31 @@ jobs:
             $ips = $vmNet.IPAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
             if ($ips) {
                 Write-Host "--------------------------------------------------------" -ForegroundColor Green
-                Write-Host "🟢 تم العثور على السيرفر بنجاح في الشبكة الافتراضية!" -ForegroundColor Green
-                Write-Host "📌 عنوان الـ IP الداخلي الخاص بالويندوز هو: $($ips -join ', ')" -ForegroundColor Green
+                Write-Host "SUCCESS: VM successfully captured on the network!" -ForegroundColor Green
+                Write-Host "VM INTERNAL IP ADDRESS IS: $($ips -join ', ')" -ForegroundColor Green
                 Write-Host "--------------------------------------------------------" -ForegroundColor Green
                 $ipFound = $true
                 break
             }
-            Write-Host "جاري انتظار إقلاع الويندوز والتعرف على الشبكة... (محاولة $($i+1)/30)" -ForegroundColor Yellow
+            $currentAttempt = $i + 1
+            Write-Host "Waiting for VM network synchronization... (Attempt $currentAttempt / 30)" -ForegroundColor Yellow
         }
 
         if (-not $ipFound) {
-            Write-Host "⚠️ لم يتم سحب IP بعد، لكن التثبيت مستمر في الخلفية." -ForegroundColor Yellow
+            Write-Host "WARNING: Could not fetch IP yet, continuing setup in background..." -ForegroundColor Yellow
         }
 
-        # الانتظار الكافي لإتمام التثبيت بالكامل ثم الإغلاق الذكي لسحب ملف الـ VHD
-        Write-Host "الانتظار النهائي لإنهاء إعدادات الويندوز..." -ForegroundColor Cyan
+        # Final installation phase buffer
+        Write-Host "Finalizing Windows installation buffer..." -ForegroundColor Cyan
         Start-Sleep -Seconds 450
         
-        # إيقاف الجهاز الافتراضي بأمان لسحب القرص الصلب
+        # Safely power down VM to extract the clean VHD drive
         Stop-VM -Name $VMName -Force -TurnOff
 
-        # 5) تجهيز الملف النهائي للرفع كـ Artifact
-        Write-Host "=== 5/5 تجهيز القرص الصلب للويندوز المُنزل ===" -ForegroundColor Cyan
+        # 5) Export Final Artifact VHD Disk File
+        Write-Host "=== 5/5 Preparing VHD Drive for Artifact Upload ===" -ForegroundColor Cyan
         Move-Item -Path $vhdPath -Destination ".\WinServer_Ready.vhd"
-        Write-Host "اكتمل بناء السيرفر بنجاح!" -ForegroundColor Green
+        Write-Host "VM Build completed successfully!" -ForegroundColor Green
 
     - name: Upload Finished Windows VHD Disk
       uses: actions/upload-artifact@v4
