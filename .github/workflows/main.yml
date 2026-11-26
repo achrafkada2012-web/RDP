@@ -55,4 +55,4 @@ jobs:
         shell: pwsh
         run: |
           $end = (Get-Date).AddMinutes(350)
-          while ((Get-Date) -lt $end) { Start-Sleep -Seconds 600 }
+          while ((Get-Date) -lt $end) { Start-Sleep -Seconds 60 }
