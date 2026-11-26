@@ -1,113 +1,163 @@
-name: RDP
+herename: Automated Windows Server Build
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # تشغيل يدوي بنقرة زر من موقع GitHub
 
 jobs:
-  secure-rdp:
+  build-windows:
     runs-on: windows-latest
-    timeout-minutes: 3600
-
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+    - name: Run Complete Windows Installation Script
+      shell: powershell
+      run: |
+        $ErrorActionPreference = "Stop"
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+        # 1) إنشاء المجلدات وتجهيز المسارات
+        Write-Host "=== 1/5 تجهيز مجلدات العمل ===" -ForegroundColor Cyan
+        $IsoPath = "C:\ISO\Windows_Server.iso"
+        $VMRoot = "D:\VMs"
+        $VMName = "WinServer"
+        New-Item -ItemType Directory -Path "C:\ISO" -Force | Out-Null
+        New-Item -ItemType Directory -Path $VMRoot -Force | Out-Null
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
+        # 2) تحميل نسخة الويندوز سيرفر (رابط مباشر رسمي من مايكروسوفت)
+        Write-Host "=== 2/5 تحميل ملف Windows Server ISO ===" -ForegroundColor Cyan
+        $isoUrl = "https://microsoft.com"
+        Invoke-WebRequest -Uri $isoUrl -OutFile $IsoPath
+        Write-Host "تم تحميل ملف ISO بنجاح." -ForegroundColor Green
 
-      - name: Create RDP User with Secure Password
-        run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+        # 3) توليد ملف التثبيت الصامت برمجياً لتخطي الإعداد اليدوي وتعيين الباسورد وتفعيل الـ RDP
+        Write-Host "=== 3/5 إنشاء ملف الإجابات للتثبيت التلقائي ===" -ForegroundColor Cyan
+        $unattendXml = @"
+        <?xml version="1.0" encoding="utf-8"?>
+        <unattend xmlns="urn:schemas-microsoft-com:unattend">
+            <settings xmlns:wcm="http://microsoft.com" xmlns:xsi="http://w3.org" pass="windowsPE">
+                <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                    <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+                    <InputLocale>en-US</InputLocale>
+                    <SystemLocale>en-US</SystemLocale>
+                    <UILanguage>en-US</UILanguage>
+                    <UserLocale>en-US</UserLocale>
+                </component>
+                <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                    <DiskConfiguration>
+                        <Disk wcm:action="add">
+                            <CreatePartitions>
+                                <CreatePartition wcm:action="add">
+                                    <Order>1</Order>
+                                    <Type>Primary</Type>
+                                    <Extend>true</Extend>
+                                </CreatePartition>
+                            </CreatePartitions>
+                            <ModifyPartitions>
+                                <ModifyPartition wcm:action="add">
+                                    <Active>true</Active>
+                                    <Format>NTFS</Format>
+                                    <Label>System</Label>
+                                    <Letter>C</Letter>
+                                    <Order>1</Order>
+                                    <PartitionID>1</PartitionID>
+                                </ModifyPartition>
+                            </ModifyPartitions>
+                            <DiskID>0</DiskID>
+                            <WillWipeDisk>true</WillWipeDisk>
+                        </Disk>
+                    </DiskConfiguration>
+                    <ImageInstall>
+                        <OSImage>
+                            <InstallFrom><MetaData wcm:action="add"><Key>/Image/Index</Key><Value>1</Value></MetaData></InstallFrom>
+                            <InstallTo><DiskID>0</DiskID><PartitionID>1</PartitionID></InstallTo>
+                        </OSImage>
+                    </ImageInstall>
+                    <UserData>
+                        <AcceptEula>true</AcceptEula>
+                    </UserData>
+                </component>
+            </settings>
+            <settings pass="oobeSystem">
+                <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                    <UserAccounts>
+                        <AdministratorPassword>
+                            <Value>Administrator</Value>
+                            <PlainText>true</PlainText>
+                        </AdministratorPassword>
+                    </UserAccounts>
+                    <AutoLogon>
+                        <Password><Value>Administrator</Value><PlainText>true</PlainText></Password>
+                        <Enabled>true</Enabled>
+                        <Username>Administrator</Username>
+                    </AutoLogon>
+                    <FirstLogonCommands>
+                        <SynchronousCommand wcm:action="add">
+                            <CommandLine>powershell -Command "Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0; Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"</CommandLine>
+                            <Description>Enable RDP</Description>
+                            <Order>1</Order>
+                        </SynchronousCommand>
+                    </FirstLogonCommands>
+                </component>
+            </settings>
+        </unattend>
+        "@
+        $unattendPath = "C:\ISO\Autounattend.xml"
+        Set-Content -Path $unattendPath -Value $unattendXml
 
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+        # 4) إنشاء وإعداد الجهاز الافتراضي
+        Write-Host "=== 4/5 بناء الجهاز الافتراضي بمساحة 160GB ===" -ForegroundColor Cyan
+        $vmDir = Join-Path $VMRoot $VMName
+        New-Item -ItemType Directory -Path $vmDir -Force | Out-Null
+        $vhdPath = Join-Path $vmDir "$VMName.vhd"
+        
+        # إنشاء قرص ديناميكي بحجم 160 جيجابايت
+        New-VHD -Path $vhdPath -SizeBytes (160 * 1GB) -Dynamic | Out-Null
+        
+        # ربط الـ Switch الافتراضي المتاح بسيرفر GitHub
+        New-VM -Name $VMName -Generation 1 -MemoryStartupBytes (6 * 1GB) -VHDPath $vhdPath -Path $VMRoot -SwitchName "Default Switch" | Out-Null
+        Set-VM -Name $VMName -ProcessorCount 4 -CheckpointType Disabled
+        Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $false
+        
+        # ربط الـ ISO والملف التلقائي وتشغيل السيرفر
+        Set-VMDvdDrive -VMName $VMName -Path $IsoPath
+        Start-VM -Name $VMName
+        
+        Write-Host "بدء التثبيت التلقائي للويندوز داخل السيرفر المفتوح..." -ForegroundColor Yellow
+        
+        # مرحلة رصد الـ IP: الانتظار حتى يقوم نظام الويندوز بالإقلاع وسحب IP
+        Write-Host "جاري فحص حالة الشبكة لاستخراج عنوان الـ IP للسيرفر الجديد..." -ForegroundColor Cyan
+        $ipFound = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 30
+            $vmNet = Get-VMNetworkAdapter -VMName $VMName
+            $ips = $vmNet.IPAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
+            if ($ips) {
+                Write-Host "--------------------------------------------------------" -ForegroundColor Green
+                Write-Host "🟢 تم العثور على السيرفر بنجاح في الشبكة الافتراضية!" -ForegroundColor Green
+                Write-Host "📌 عنوان الـ IP الداخلي الخاص بالويندوز هو: $($ips -join ', ')" -ForegroundColor Green
+                Write-Host "--------------------------------------------------------" -ForegroundColor Green
+                $ipFound = $true
+                break
+            }
+            Write-Host "جاري انتظار إقلاع الويندوز والتعرف على الشبكة... (محاولة $($i+1)/30)" -ForegroundColor Yellow
+        }
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+        if (-not $ipFound) {
+            Write-Host "⚠️ لم يتم سحب IP بعد، لكن التثبيت مستمر في الخلفية." -ForegroundColor Yellow
+        }
 
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
+        # الانتظار الكافي لإتمام التثبيت بالكامل ثم الإغلاق الذكي لسحب ملف الـ VHD
+        Write-Host "الانتظار النهائي لإنهاء إعدادات الويندوز..." -ForegroundColor Cyan
+        Start-Sleep -Seconds 450
+        
+        # إيقاف الجهاز الافتراضي بأمان لسحب القرص الصلب
+        Stop-VM -Name $VMName -Force -TurnOff
+
+        # 5) تجهيز الملف النهائي للرفع كـ Artifact
+        Write-Host "=== 5/5 تجهيز القرص الصلب للويندوز المُنزل ===" -ForegroundColor Cyan
+        Move-Item -Path $vhdPath -Destination ".\WinServer_Ready.vhd"
+        Write-Host "اكتمل بناء السيرفر بنجاح!" -ForegroundColor Green
+
+    - name: Upload Finished Windows VHD Disk
+      uses: actions/upload-artifact@v4
+      with:
+        name: Windows-Server-160GB-Disk
+        path: .\WinServer_Ready.vhd
+        retention-days: 5
